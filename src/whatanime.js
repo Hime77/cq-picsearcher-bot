@@ -4,7 +4,7 @@ const Axios = require('./axiosProxy');
 
 let hostsI = 0;
 
-const waURL = 'https://trace.moe';
+const date2str = ({ year, month, day }) => [year, month, day].join('-');
 
 /**
  * whatanime搜索
@@ -15,7 +15,10 @@ const waURL = 'https://trace.moe';
  */
 async function doSearch(imgURL, debug = false) {
   const hosts = global.config.whatanimeHost;
-  const hostIndex = hostsI++ % hosts.length; // 决定当前使用的host
+  const tokens = global.config.whatanimeToken;
+  const index = hostsI++;
+  const hostIndex = index % hosts.length; // 决定当前使用的host
+  const tokenIndex = index % tokens.length;
   let msg = global.config.bot.replys.failed; // 返回信息
   let success = false;
 
@@ -23,7 +26,7 @@ async function doSearch(imgURL, debug = false) {
     if (typeof str === 'string' && str.length > 0) msg += '\n' + (needEsc ? CQ.escape(str) : str);
   }
 
-  await getSearchResult(imgURL, hosts[hostIndex])
+  await getSearchResult(hosts[hostIndex], tokens[tokenIndex], imgURL)
     .then(async ret => {
       if (debug) {
         console.log(`${global.getTime()} whatanime[${hostIndex}]`);
@@ -52,50 +55,37 @@ async function doSearch(imgURL, debug = false) {
       // 提取信息
       const doc = ret.docs[0]; // 相似度最高的结果
       const similarity = (doc.similarity * 100).toFixed(2); // 相似度
-      const jpName = doc.title_native || ''; // 日文名
-      const romaName = doc.title_romaji || ''; // 罗马音
-      const cnName = doc.title_chinese || ''; // 中文名
-      let posSec = Math.floor(doc.at); // 位置：秒
-      const posMin = Math.floor(posSec / 60); // 位置：分
-      posSec %= 60;
-      const isR18 = doc.is_adult; // 是否R18
-      const anilistID = doc.anilist_id; // 动漫ID
-      const episode = doc.episode || '-'; // 集数
-      let type, start, end, img, synonyms;
+      const {
+        title_native: jpName = '', // 日文名
+        title_romaji: romaName = '', // 罗马音
+        title_chinese: cnName = '', // 中文名
+        is_adult: isR18, // 是否 R18
+        anilist_id: anilistID, // 番剧 ID
+        episode = '-', // 集数
+      } = doc;
+      const time = (() => {
+        const s = Math.floor(doc.at);
+        const m = Math.floor(s / 60);
+        const ms = [m, s % 60];
+        return ms.map(num => String(num).padStart(2, '0')).join(':');
+      })();
 
       await getAnimeInfo(anilistID)
-        .then(info => {
-          type = info.type + ' - ' + info.format; // 类型
-          const sd = info.startDate;
-          start = sd.year + '-' + sd.month + '-' + sd.day; // 开始日期
-          const ed = info.endDate;
-          end = ed.year > 0 ? ed.year + '-' + ed.month + '-' + ed.day : '';
-          img = CQ.img(info.coverImage.large); // 番剧封面图
-          synonyms = info.synonyms_chinese || []; // 别名
-
-          // 构造返回信息
-          msg = `WhatAnime (${similarity}%)\n该截图出自第${episode}集的${posMin < 10 ? '0' : ''}${posMin}:${
-            posSec < 10 ? '0' : ''
-          }${posSec}`;
+        .then(({ type, format, startDate, endDate, coverImage }) => {
+          msg = `WhatAnime (${similarity}%)\n该截图出自第${episode}集的${time}`;
           if (limit <= 3) {
             appendMsg(`WhatAnime-${hostIndex}：注意，${limit_ttl}秒内搜索次数仅剩${limit}次`);
           }
           if (!(global.config.bot.hideImg || (global.config.bot.hideImgWhenWhatanimeR18 && isR18))) {
-            appendMsg(img, false);
+            appendMsg(CQ.img(coverImage.large), false);
           }
           appendMsg(romaName);
           if (jpName !== romaName) appendMsg(jpName);
           if (cnName !== romaName && cnName !== jpName) appendMsg(cnName);
-          if (synonyms.length > 0 && !(synonyms.length >= 2 && synonyms[0] === '[' && synonyms[1] === ']')) {
-            let syn = `别名：“${synonyms[0]}”`;
-            for (let i = 1; i < synonyms.length; i++) syn += `、“${synonyms[i]}”`;
-            appendMsg(syn);
-          }
-          appendMsg(`类型：${type}`);
-          appendMsg(`开播：${start}`);
-          if (end.length > 0) appendMsg(`完结：${end}`);
+          appendMsg(`类型：${type}-${format}`);
+          appendMsg(`开播：${date2str(startDate)}`);
+          if (endDate.year > 0) appendMsg(`完结：${date2str(endDate)}`);
           if (isR18) appendMsg('R18注意！');
-
           success = true;
         })
         .catch(e => {
@@ -118,12 +108,12 @@ async function doSearch(imgURL, debug = false) {
 /**
  * 取得搜番结果
  *
+ * @param {string} host 自定义 whatanime 的 host
+ * @param {string} token whatanime token
  * @param {string} imgURL 图片地址
- * @param {string} host 自定义whatanime的host
  * @returns Prased JSON
  */
-async function getSearchResult(imgURL, host) {
-  const token = global.config.whatanimeToken.trim();
+async function getSearchResult(host, token, imgURL) {
   if (host === 'trace.moe') host = `https://${host}`;
   else if (!/^https?:\/\//.test(host)) host = `http://${host}`;
   const json = {
@@ -135,7 +125,7 @@ async function getSearchResult(imgURL, host) {
     responseType: 'arraybuffer', // 为了转成 base64
   })
     .then(({ data: image }) =>
-      Axios.post(`${host}/api/search` + (token ? `?token=${token}` : ''), {
+      Axios.post(`${host}/api/search` + (token ? `?token=${token.trim()}` : ''), {
         image: Buffer.from(image, 'binary').toString('base64'),
       })
     )
@@ -154,14 +144,38 @@ async function getSearchResult(imgURL, host) {
   return json;
 }
 
+const animeInfoQuery = `
+query ($id: Int) {
+  Media (id: $id, type: ANIME) {
+    type
+    format
+    startDate {
+      year
+      month
+      day
+    }
+    endDate {
+      year
+      month
+      day
+    }
+    coverImage {
+      large
+    }
+  }
+}`;
+
 /**
  * 取得番剧信息
  *
- * @param {number} anilistID
+ * @param {number} id
  * @returns Prased JSON
  */
-function getAnimeInfo(anilistID) {
-  return Axios.get(`${waURL}/info?anilist_id=${anilistID}`).then(({ data }) => data[0]);
+function getAnimeInfo(id) {
+  return Axios.post('https://graphql.anilist.co', {
+    query: animeInfoQuery,
+    variables: { id },
+  }).then(({ data }) => data.data.Media);
 }
 
 export default doSearch;

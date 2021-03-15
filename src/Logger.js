@@ -1,3 +1,4 @@
+import _ from 'lodash';
 import Fs from 'fs';
 import Path from 'path';
 import NodeCache from 'node-cache';
@@ -16,10 +17,7 @@ if (!Fs.existsSync(banListFile)) {
 }
 
 const banList = require(banListFile);
-
-function updateBanListFile() {
-  Fs.writeFileSync(banListFile, JSON.stringify(banList));
-}
+const updateBanListFile = () => Fs.writeFileSync(banListFile, JSON.stringify(banList));
 
 /**
  * 各种记录
@@ -34,9 +32,12 @@ class Logger {
     this.hsaSign = new Set(); // 每日签到
     this.date = new Date().getDate();
     this.dailyJobDone = false; // 每日任务是否完成
-    this.checkUpdateAgo = Infinity;
 
-    this.searchMode.on('expired', (k, v) => v && v.cb && v.cb());
+    this.searchMode.on('expired', (k, sm) => {
+      if (!sm) return;
+      if (sm.cb) sm.cb();
+      if (sm.enable) sendSmNoImgNotice(sm);
+    });
 
     setInterval(() => {
       // 每日初始化
@@ -46,17 +47,22 @@ class Logger {
         this.searchCount.flushAll();
         this.hsaSign.clear();
         this.dailyJobDone = false;
-        if (global.config.bot.checkUpdate >= 0) {
-          if (this.checkUpdateAgo >= global.config.bot.checkUpdate) {
-            checkUpdate()
-              .then(() => (this.checkUpdateAgo = 0))
-              .catch(() => {
-                console.error(`${global.getTime()} [error] check update`);
-              });
-          } else this.checkUpdateAgo++;
-        }
       }
-    }, 60 * 1000);
+    }, 60000);
+
+    const checkUpdateIntervalHours = Number(global.config.bot.checkUpdate);
+    if (checkUpdateIntervalHours > 0) {
+      setTimeout(() => {
+        checkUpdate().catch(() => {
+          console.error(`${global.getTime()} [error] check update`);
+        });
+      }, 60 * 1000);
+      setInterval(() => {
+        checkUpdate().catch(() => {
+          console.error(`${global.getTime()} [error] check update`);
+        });
+      }, Math.min(3600000 * checkUpdateIntervalHours, 2 ** 31 - 1));
+    }
   }
 
   static ban(type, id) {
@@ -72,6 +78,7 @@ class Logger {
   }
 
   static checkBan(u, g = 0) {
+    if (global.config.bot.ignoreOfficialBot && 2854196300 <= u && u <= 2854216399) return true;
     if (banList.u.includes(u)) return true;
     if (g !== 0 && banList.g.includes(g)) return true;
     return false;
@@ -101,13 +108,20 @@ class Logger {
    */
   smSwitch(g, u, s, cb = null) {
     const key = `${g}-${u}`;
-    if (!this.searchMode.has(key)) {
-      this.searchMode.set(key, {
-        enable: false,
-        db: 999,
-      });
-    }
-    const sm = this.searchMode.get(key);
+    const sm = (() => {
+      if (!this.searchMode.has(key)) {
+        const obj = {
+          enable: false,
+          db: 999,
+          group: g,
+          user: u,
+          count: 0,
+        };
+        this.searchMode.set(key, obj);
+        return obj;
+      }
+      return this.searchMode.get(key);
+    })();
     sm.cb = cb;
     // 搜图模式切换
     if (s) {
@@ -120,6 +134,8 @@ class Logger {
     } else {
       if (sm.enable) {
         sm.enable = false;
+        sendSmNoImgNotice(sm);
+        sm.count = 0;
         return true;
       }
       return false;
@@ -149,8 +165,20 @@ class Logger {
    */
   smStatus(g, u) {
     const sm = this.searchMode.get(`${g}-${u}`);
-    if (!sm || !sm.enable) return false;
+    if (!_.get(sm, 'enable')) return false;
     return sm.db;
+  }
+
+  /**
+   * 搜图模式搜图计数+1
+   *
+   * @param {number} g 群号
+   * @param {number} u QQ号
+   * @memberof Logger
+   */
+  smCount(g, u) {
+    const sm = this.searchMode.get(`${g}-${u}`);
+    sm.count++;
   }
 
   /**
@@ -274,3 +302,16 @@ class Logger {
 }
 
 export default Logger;
+
+function sendSmNoImgNotice({ group, user, count }) {
+  if (!group || count) return;
+  global.replyMsg(
+    {
+      message_type: 'group',
+      group_id: group,
+      user_id: user,
+    },
+    '⚠️未在本次搜图模式中收到过图片',
+    true
+  );
+}
