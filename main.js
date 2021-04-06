@@ -15,7 +15,7 @@ import _ from 'lodash';
 import minimist from 'minimist';
 import { rmdHandler } from './src/plugin/reminder';
 import broadcast from './src/broadcast';
-import antiBiliMiniApp from './src/plugin/antiBiliMiniApp';
+import bilibiliHandler from './src/plugin/bilibili';
 import logError from './src/logError';
 import event from './src/event';
 import corpus from './src/plugin/corpus';
@@ -144,7 +144,10 @@ setInterval(() => {
 }, 60 * 1000);
 
 // 通用处理
-function commonHandle(e, context) {
+async function commonHandle(e, context) {
+  // 忽略自己发给自己的消息
+  if (context.user_id === bot._qq) return true;
+
   // 黑名单检测
   if (Logger.checkBan(context.user_id, context.group_id)) return true;
 
@@ -180,7 +183,7 @@ function commonHandle(e, context) {
   }
 
   //  反哔哩哔哩小程序
-  antiBiliMiniApp(context);
+  if (await bilibiliHandler(context)) return true;
 
   return false;
 }
@@ -256,7 +259,7 @@ function adminPrivateMsg(e, context) {
 
 // 私聊以及群组@的处理
 async function privateAndAtMsg(e, context) {
-  if (commonHandle(e, context)) {
+  if (await commonHandle(e, context)) {
     e.stopPropagation();
     return;
   }
@@ -326,7 +329,7 @@ function debugGroupMsg(e, context) {
 
 // 群组消息处理
 async function groupMsg(e, context) {
-  if (commonHandle(e, context) || (await getGroupFile(context))) {
+  if ((await commonHandle(e, context)) || (await getGroupFile(context))) {
     e.stopPropagation();
     return;
   }
@@ -627,9 +630,10 @@ function hasImage(msg) {
  * @param {string} message 消息
  */
 function sendMsg2Admin(message) {
-  if (bot.isReady() && global.config.bot.admin > 0) {
+  const admin = global.config.bot.admin;
+  if (bot.isReady() && admin > 0 && admin !== bot._qq) {
     bot('send_private_msg', {
-      user_id: global.config.bot.admin,
+      user_id: admin,
       message,
     });
   }
